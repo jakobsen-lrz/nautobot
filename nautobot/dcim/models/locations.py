@@ -276,17 +276,32 @@ class Location(TreeModel, PrimaryModel):
     def clean(self):
         super().clean()
 
-        # Prevent changing location type as that would require a whole bunch of cascading logic checks,
-        # e.g. what if the new type doesn't allow all of the associated objects that the old type did?
+        # Prevent changing location type if location is not a leaf or the new location type does not have the previous content types,
         if self.present_in_database:
             prior_location_type = Location.objects.get(pk=self.pk).location_type
             if self.location_type != prior_location_type:
-                raise ValidationError(
-                    {
-                        "location_type": f"Changing the type of an existing Location (from {prior_location_type} to "
-                        f"{self.location_type} in this case) is not permitted."
-                    }
-                )
+                allow_changing_location_type = False
+                new_content_types = frozenset([ ct.pk for ct in self.location_type.content_types.all() ])
+                prior_content_types = frozenset([ ct.pk for ct in prior_location_type.content_types.all() ])
+                if new_content_types != prior_content_types:
+                    pass
+                elif self.location_type.nestable:
+                    pass
+                elif prior_location_type.nestable:
+                    pass
+                elif len(self.location_type.children.all()) > 0:
+                    pass
+                elif len(prior_location_type.children.all()) > 0:
+                    pass
+                else:
+                    allow_changing_location_type = True
+                if not allow_changing_location_type:
+                    raise ValidationError(
+                        {
+                            "location_type": f"Changing the type of an existing Location (from {prior_location_type} to "
+                            f"{self.location_type}) is not permitted in this case."
+                        }
+                    )
 
         if self.location_type.parent is None:
             # We shouldn't have a parent, *unless* our own location type is permitted to be nested.

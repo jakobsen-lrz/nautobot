@@ -1,0 +1,4 @@
+Allow changing LocationType of Location if the new and prior LocationType both:
+ - Support the same ContentTypes
+ - Are not nestable
+ - Dont have child LocationTypes
