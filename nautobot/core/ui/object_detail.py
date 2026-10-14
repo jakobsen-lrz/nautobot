@@ -15,7 +15,7 @@ import uuid
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
-from django.db.models import CharField, JSONField, Q, URLField
+from django.db.models import CharField, JSONField, Q, QuerySet, URLField
 from django.db.models.constants import LOOKUP_SEP
 from django.db.models.fields.related import ManyToManyField
 from django.template import Context
@@ -639,6 +639,23 @@ class Tab(Component):
         """
         return self.label
 
+    def should_render(self, context: Context):
+        if not super().should_render(context):
+            return False
+        if (
+            self.required_permissions  # covered by super()
+            or not self.panels  # nothing to check below
+            or isinstance(self, (DistinctViewTab, _ObjectDetailDefaultTab))  # always rendered
+        ):
+            return True
+        for p in self.panels:
+            try:
+                if p.should_render(context):
+                    return True
+            except Exception:  # maybe missing context here that the panel expects?
+                return True  # better safe than sorry
+        return False
+
     def should_render_content(self, context: Context):
         """
         Only render a main-view Tab if the active request is for the main object view rather than a separate action.
@@ -713,6 +730,19 @@ class DistinctViewTab(Tab):
             "url": url,
         }
 
+    def _get_related_models(self, field_value):
+        if isinstance(field_value, QuerySet):
+            return [field_value.model]
+        related_models = []
+        if hasattr(field_value, "target_field"):
+            related_models.append(field_value.target_field.related_model)
+        elif hasattr(field_value, "model"):
+            related_models.append(field_value.model)
+        through_model = getattr(field_value, "through", None)
+        if through_model is not None:
+            related_models.append(through_model)
+        return related_models
+
     def should_render(self, context: Context):
         if not super().should_render(context):
             return False
@@ -728,17 +758,28 @@ class DistinctViewTab(Tab):
             )
             return True
 
+        related_object_attribute = getattr(obj, self.related_object_attribute)
+        related_models = self._get_related_models(related_object_attribute)
         try:
-            self.related_object_count = getattr(obj, self.related_object_attribute).count()
+            self.related_object_count = related_object_attribute.count()
         except AttributeError:
             # Not a warning log, as there are cases where this is expected.
             logger.debug(
                 f"{obj}'s attribute {self.related_object_attribute} is not a related manager to count for tab label."
             )
 
-        if self.hide_if_empty and not self.related_object_count:
-            return False
-        return True
+        if self.hide_if_empty:
+            return bool(self.related_object_count)
+
+        if (
+            self.required_permissions  # handled by super()
+            or len(related_models) == 0  # The right related models could not be determined
+            or len(self.panels) != 1  # return True if tab consists of something other than a single ObjectsTablePanel
+            or not isinstance(self.panels[0], ObjectsTablePanel)
+        ):
+            return True
+        user = context["request"].user
+        return any([user.has_perm(get_permission_for_model(rm, "view")) for rm in related_models])  # pylint: disable=use-a-generator
 
     def should_render_content(self, context: Context):
         """
@@ -2329,6 +2370,10 @@ class AsyncStatsPanel(Panel):
         }
 
 
+class _ObjectDetailDefaultTab(Tab):
+    pass
+
+
 class _ObjectCustomFieldsPanel(GroupedKeyValueTablePanel):
     """A panel that renders a table of object custom fields."""
 
@@ -2536,7 +2581,7 @@ class _ObjectCommentPanel(ObjectTextPanel):
         return hasattr(get_obj_from_context(context), "comments")
 
 
-class _ObjectDetailMainTab(Tab):
+class _ObjectDetailMainTab(_ObjectDetailDefaultTab):
     """Base class for a main display tab containing an overview of object fields and similar data."""
 
     label = ""  # see render_label()
@@ -2589,7 +2634,7 @@ class _ObjectDataProvenancePanel(ObjectFieldsPanel):
         return super().render_value(key, value, context)
 
 
-class _ObjectDetailAdvancedTab(Tab):
+class _ObjectDetailAdvancedTab(_ObjectDetailDefaultTab):
     """Built-in class for a Tab displaying "advanced" information such as PKs and data provenance."""
 
     label = "Advanced"
@@ -2614,7 +2659,7 @@ class _ObjectDetailAdvancedTab(Tab):
             )
 
 
-class _ObjectDetailContactsTab(Tab):
+class _ObjectDetailContactsTab(_ObjectDetailDefaultTab):
     """Built-in class for a Tab displaying information about contact/team associations."""
 
     label = "Contacts"
@@ -2720,7 +2765,7 @@ class DynamicGroupsTextPanel(BaseTextPanel):
 
 
 @dataclass
-class _ObjectDetailGroupsTab(Tab):
+class _ObjectDetailGroupsTab(_ObjectDetailDefaultTab):
     """Built-in class for a Tab displaying information about associated dynamic groups."""
 
     label = "Dynamic Groups"
@@ -2772,7 +2817,7 @@ class _ObjectMetadataTablePanel(ObjectsTablePanel):
 
 
 @dataclass
-class _ObjectDetailMetadataTab(Tab):
+class _ObjectDetailMetadataTab(_ObjectDetailDefaultTab):
     """Built-in class for a Tab displaying information about associated object metadata."""
 
     label = "Object Metadata"
