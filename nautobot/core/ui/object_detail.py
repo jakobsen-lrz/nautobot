@@ -738,6 +738,19 @@ class DistinctViewTab(Tab):
 
         if self.hide_if_empty and not self.related_object_count:
             return False
+        if not self.required_permissions:  # only check if permissions werent specified explicitly
+            view = get_view_for_model(obj._meta.model)
+            target_url_name = self.url_name.split(":")[1].split("_", maxsplit=1)[1]
+            for attr in dir(view):
+                view_value = getattr(view, attr)
+                if not hasattr(view_value, "url_name") or not hasattr(view_value, "kwargs") or not callable(view_value):
+                    continue
+                if view_value.url_name != target_url_name:
+                    continue
+                extra_permissions = view_value.kwargs.get("custom_view_additional_permissions", [])
+                if len(extra_permissions) != 0 and not context["request"].user.has_perms(extra_permissions):
+                    return False
+                break
         return True
 
     def should_render_content(self, context: Context):
